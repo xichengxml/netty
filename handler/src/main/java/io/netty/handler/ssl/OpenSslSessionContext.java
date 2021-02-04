@@ -15,7 +15,6 @@
  */
 package io.netty.handler.ssl;
 
-import io.netty.handler.ssl.util.LazyJavaxX509Certificate;
 import io.netty.internal.tcnative.SSL;
 import io.netty.internal.tcnative.SSLContext;
 import io.netty.internal.tcnative.SessionTicketKey;
@@ -24,8 +23,8 @@ import io.netty.util.internal.ObjectUtil;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSessionContext;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Enumeration;
+import java.util.Iterator;
 import java.util.concurrent.locks.Lock;
 
 /**
@@ -41,7 +40,6 @@ public abstract class OpenSslSessionContext implements SSLSessionContext {
     private final OpenSslKeyMaterialProvider provider;
 
     final ReferenceCountedOpenSslContext context;
-    final OpenSslNullSession nullSession;
 
     final OpenSslSessionCache sessionCache;
     private final long mask;
@@ -57,17 +55,11 @@ public abstract class OpenSslSessionContext implements SSLSessionContext {
         this.mask = mask;
         stats = new OpenSslSessionStats(context);
         sessionCache = cache;
-        // If we do not use the KeyManagerFactory we need to set localCertificateChain now.
-        // When we use a KeyManagerFactory it will be set during setKeyMaterial(...).
-        nullSession = new OpenSslNullSession(this, provider == null ? context.keyCertChain : null);
         SSLContext.setSSLSessionCache(context.ctx, cache);
     }
 
-    final DefaultOpenSslSession newOpenSslSession(long sslSession, String peerHost,
-                                                  int peerPort, String protocol, String cipher,
-                                                  LazyJavaxX509Certificate[] peerCertificateChain, long creationTime) {
-        return new DefaultOpenSslSession(this , peerHost, peerPort, sslSession, protocol, cipher,
-                peerCertificateChain, creationTime * 1000L, getSessionTimeout() * 1000L);
+    final boolean useKeyManager() {
+        return provider != null;
     }
 
     @Override
@@ -102,12 +94,23 @@ public abstract class OpenSslSessionContext implements SSLSessionContext {
 
     @Override
     public SSLSession getSession(byte[] bytes) {
-        return sessionCache.getSession(bytes);
+        return sessionCache.getSession(new OpenSslSessionId(bytes));
     }
 
     @Override
     public Enumeration<byte[]> getIds() {
-        return Collections.enumeration(sessionCache.getIds());
+        return new Enumeration<byte[]>() {
+            private final Iterator<OpenSslSessionId> ids = sessionCache.getIds().iterator();
+            @Override
+            public boolean hasMoreElements() {
+                return ids.hasNext();
+            }
+
+            @Override
+            public byte[] nextElement() {
+                return ids.next().cloneBytes();
+            }
+        };
     }
 
     /**
@@ -205,8 +208,16 @@ public abstract class OpenSslSessionContext implements SSLSessionContext {
     /**
      * Remove the given {@link OpenSslSession} from the cache, and so not re-use it for new connections.
      */
-    final void removeFromCache(OpenSslSession session) {
-        sessionCache.removeSessionWithId(session.sessionId());
+    final void removeFromCache(OpenSslSessionId id) {
+        sessionCache.removeSessionWithId(id);
+    }
+
+    final boolean isInCache(OpenSslSessionId id) {
+        return sessionCache.containsSessionWithId(id);
+    }
+
+    void setSessionFromCache(String host, int port, long ssl) {
+        sessionCache.setSession(ssl, host, port);
     }
 
     final void destroy() {

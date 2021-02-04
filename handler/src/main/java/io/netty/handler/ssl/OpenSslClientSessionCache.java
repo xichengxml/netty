@@ -15,9 +15,9 @@
  */
 package io.netty.handler.ssl;
 
+import io.netty.internal.tcnative.SSL;
 import io.netty.util.AsciiString;
 
-import javax.net.ssl.SSLException;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -27,14 +27,14 @@ import java.util.Map;
 final class OpenSslClientSessionCache extends OpenSslSessionCache {
     // TODO: Should we support to have a List of OpenSslSessions for a Host/Port key and so be able to
     // support sessions for different protocols / ciphers to the same remote peer ?
-    private final Map<HostPort, OpenSslSession> sessions = new HashMap<HostPort, OpenSslSession>();
+    private final Map<HostPort, NativeSslSession> sessions = new HashMap<HostPort, NativeSslSession>();
 
     OpenSslClientSessionCache(OpenSslEngineMap engineMap) {
         super(engineMap);
     }
 
     @Override
-    protected boolean sessionCreated(OpenSslSession session) {
+    protected boolean sessionCreated(NativeSslSession session) {
         assert Thread.holdsLock(this);
         HostPort hostPort = keyFor(session.getPeerHost(), session.getPeerPort());
         if (hostPort == null || sessions.containsKey(hostPort)) {
@@ -45,7 +45,7 @@ final class OpenSslClientSessionCache extends OpenSslSessionCache {
     }
 
     @Override
-    protected void sessionRemoved(OpenSslSession session) {
+    protected void sessionRemoved(NativeSslSession session) {
         assert Thread.holdsLock(this);
         HostPort hostPort = keyFor(session.getPeerHost(), session.getPeerPort());
         if (hostPort == null) {
@@ -54,51 +54,29 @@ final class OpenSslClientSessionCache extends OpenSslSessionCache {
         sessions.remove(hostPort);
     }
 
-    private static boolean isProtocolEnabled(OpenSslSession session, String[] enabledProtocols) {
-        return arrayContains(session.getProtocol(), enabledProtocols);
-    }
-
-    private static boolean isCipherSuiteEnabled(OpenSslSession session, String[] enabledCipherSuites) {
-        return arrayContains(session.getCipherSuite(), enabledCipherSuites);
-    }
-
-    private static boolean arrayContains(String expected, String[] array) {
-        for (int i = 0; i < array.length; ++i) {
-            String value = array[i];
-            if (value.equals(expected)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void setSession(ReferenceCountedOpenSslEngine engine) throws SSLException {
-        HostPort hostPort = keyFor(engine.getPeerHost(), engine.getPeerPort());
+    @Override
+    void setSession(long ssl, String host, int port) {
+        HostPort hostPort = keyFor(host, port);
         if (hostPort == null) {
             return;
         }
-        final OpenSslSession session;
+        final NativeSslSession session;
         synchronized (this) {
             session = sessions.get(hostPort);
             if (session == null) {
                 return;
             }
-            assert session.refCnt() >= 1;
             if (!session.isValid()) {
                 removeSessionWithId(session.sessionId());
                 return;
             }
         }
 
-        // Ensure the protocol and ciphersuite can be used.
-        if (!isProtocolEnabled(session, engine.getEnabledProtocols()) ||
-                !isCipherSuiteEnabled(session, engine.getEnabledCipherSuites())) {
-            return;
-        }
-
-        // Try to set the session, if true is returned we retained the session and incremented the reference count
+        // Try to set the session, if true is returned OpenSSL incremented the reference count
         // of the underlying SSL_SESSION*.
-        if (engine.setSession(session)) {
+        boolean reused = SSL.setSession(ssl, session.session());
+
+        if (reused) {
             if (session.shouldBeSingleUse()) {
                 // Should only be used once
                 session.invalidate();
@@ -147,6 +125,14 @@ final class OpenSslClientSessionCache extends OpenSslSessionCache {
             }
             HostPort other = (HostPort) obj;
             return port == other.port && host.equalsIgnoreCase(other.host);
+        }
+
+        @Override
+        public String toString() {
+            return "HostPort{" +
+                    "host='" + host + '\'' +
+                    ", port=" + port +
+                    '}';
         }
     }
 }

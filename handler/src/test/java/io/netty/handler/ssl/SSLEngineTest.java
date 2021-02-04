@@ -53,6 +53,7 @@ import org.conscrypt.OpenSSLProvider;
 import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -3035,6 +3036,8 @@ public abstract class SSLEngineTest {
             int serverSessions = currentSessionCacheSize(serverSslCtx.sessionContext());
             int nCSessions = clientSessions;
             int nSSessions = serverSessions;
+            boolean clientSessionReused = false;
+            boolean serverSessionReused = false;
             if (protocolCipherCombo == ProtocolCipherCombo.TLSV13) {
                 // Allocate something which is big enough for sure
                 ByteBuffer packetBuffer = allocateBuffer(32 * 1024);
@@ -3074,7 +3077,9 @@ public abstract class SSLEngineTest {
                     appBuffer.clear().position(4).flip();
                     nCSessions = currentSessionCacheSize(clientSslCtx.sessionContext());
                     nSSessions = currentSessionCacheSize(serverSslCtx.sessionContext());
-                } while ((reuse && (!isSessionMaybeReused(clientEngine) || !isSessionMaybeReused(serverEngine)))
+                    clientSessionReused = isSessionMaybeReused(clientEngine);
+                    serverSessionReused = isSessionMaybeReused(serverEngine);
+                } while ((reuse && (!clientSessionReused || !serverSessionReused))
                         || (!reuse && (nCSessions < clientSessions ||
                         // server may use multiple sessions
                         nSSessions < serverSessions)));
@@ -3215,7 +3220,6 @@ public abstract class SSLEngineTest {
                 .sslContextProvider(serverSslContextProvider())
                 .protocols(protocols())
                 .ciphers(ciphers())
-                .sessionCacheSize(1)
                 .build());
 
         try {

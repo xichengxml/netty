@@ -86,7 +86,7 @@ public class ConscryptSslEngineTest extends SSLEngineTest {
     }
 
     @Ignore("Possible Conscrypt bug")
-    public void testSessionCacheTimeout() {
+    public void testSessionCacheTimeout() throws Exception {
         // Skip
         // https://github.com/google/conscrypt/issues/851
     }

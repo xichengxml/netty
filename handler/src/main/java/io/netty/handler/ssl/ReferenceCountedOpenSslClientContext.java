@@ -206,10 +206,6 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
         OpenSslClientSessionContext(ReferenceCountedOpenSslContext context, OpenSslKeyMaterialProvider provider) {
             super(context, provider, SSL.SSL_SESS_CACHE_CLIENT, new OpenSslClientSessionCache(context.engineMap));
         }
-
-        void setSession(ReferenceCountedOpenSslEngine engine) throws SSLException {
-            ((OpenSslClientSessionCache) sessionCache).setSession(engine);
-        }
     }
 
     private static final class TrustManagerVerifyCallback extends AbstractCertificateVerifier {

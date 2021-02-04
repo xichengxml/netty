@@ -16,9 +16,15 @@
 package io.netty.handler.ssl;
 
 import io.netty.internal.tcnative.SSLSessionCache;
+import io.netty.util.ResourceLeakDetector;
+import io.netty.util.ResourceLeakDetectorFactory;
+import io.netty.util.ResourceLeakTracker;
+import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.SystemPropertyUtil;
 
-import javax.net.ssl.SSLSession;
+import javax.security.cert.X509Certificate;
+import java.security.Principal;
+import java.security.cert.Certificate;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -45,13 +51,13 @@ class OpenSslSessionCache implements SSLSessionCache {
     }
     private final OpenSslEngineMap engineMap;
 
-    private final Map<OpenSslSessionId, OpenSslSession> sessions =
-            new LinkedHashMap<OpenSslSessionId, OpenSslSession>() {
+    private final Map<OpenSslSessionId, NativeSslSession> sessions =
+            new LinkedHashMap<OpenSslSessionId, NativeSslSession>() {
 
                 private static final long serialVersionUID = -7773696788135734448L;
 
                 @Override
-                protected boolean removeEldestEntry(Map.Entry<OpenSslSessionId, OpenSslSession> eldest) {
+                protected boolean removeEldestEntry(Map.Entry<OpenSslSessionId, NativeSslSession> eldest) {
                     int maxSize = maximumCacheSize.get();
                     if (maxSize >= 0 && this.size() > maxSize) {
                         removeSessionWithId(eldest.getKey());
@@ -91,7 +97,7 @@ class OpenSslSessionCache implements SSLSessionCache {
      * @param session the new session.
      * @return {@code true} if the session should be cached, {@code false} otherwise.
      */
-    protected boolean sessionCreated(OpenSslSession session) {
+    protected boolean sessionCreated(NativeSslSession session) {
         return true;
     }
 
@@ -100,11 +106,11 @@ class OpenSslSessionCache implements SSLSessionCache {
      *
      * @param session the session to remove.
      */
-    protected void sessionRemoved(OpenSslSession session) { }
+    protected void sessionRemoved(NativeSslSession session) { }
 
     final void setSessionCacheSize(int size) {
         long oldSize = maximumCacheSize.getAndSet(size);
-        if (oldSize > size) {
+        if (oldSize > size || size == 0) {
             // Just keep it simple for now and drain the whole cache.
             clear();
         }
@@ -119,9 +125,9 @@ class OpenSslSessionCache implements SSLSessionCache {
             return;
         }
         long now = System.currentTimeMillis();
-        Iterator<Map.Entry<OpenSslSessionId, OpenSslSession>> iterator = sessions.entrySet().iterator();
+        Iterator<Map.Entry<OpenSslSessionId, NativeSslSession>> iterator = sessions.entrySet().iterator();
         while (iterator.hasNext()) {
-            OpenSslSession session = iterator.next().getValue();
+            NativeSslSession session = iterator.next().getValue();
             // As we use a LinkedHashMap we can break the while loop as soon as we find a valid session.
             // This is true as we always drain the cache as soon as we change the timeout to a smaller value as
             // it was set before. This way its true that the insertation order matches the timeout order.
@@ -130,7 +136,7 @@ class OpenSslSessionCache implements SSLSessionCache {
             }
             iterator.remove();
 
-            notifyRemovalAndRelease(session);
+            notifyRemovalAndFree(session);
         }
     }
 
@@ -141,11 +147,8 @@ class OpenSslSessionCache implements SSLSessionCache {
             // We couldn't find the engine itself.
             return false;
         }
-        final OpenSslSession session = engine.sessionCreated(sslSession);
-        if (session == null) {
-            return false;
-        }
-
+        NativeSslSession session = new NativeSslSession(sslSession, engine.getPeerHost(), engine.getPeerPort(),
+                getSessionTimeout() * 1000L);
         synchronized (this) {
             // Mimic what OpenSSL is doing and expunge every 255 new sessions
             // See https://www.openssl.org/docs/man1.0.2/man3/SSL_CTX_flush_sessions.html
@@ -154,15 +157,14 @@ class OpenSslSessionCache implements SSLSessionCache {
                 expungeInvalidSessions();
             }
 
-            assert session.refCnt() >= 1;
             if (!sessionCreated(session)) {
                 // Should not be cached, return false.
                 return false;
             }
 
-            final OpenSslSession old = sessions.put(session.sessionId(), session.retain());
+            final NativeSslSession old = sessions.put(session.sessionId(), session);
             if (old != null) {
-                notifyRemovalAndRelease(old);
+                notifyRemovalAndFree(old);
             }
         }
         return true;
@@ -171,13 +173,12 @@ class OpenSslSessionCache implements SSLSessionCache {
     @Override
     public final long getSession(long ssl, byte[] sessionId) {
         OpenSslSessionId id = new OpenSslSessionId(sessionId);
-        final OpenSslSession session;
+        final NativeSslSession session;
         synchronized (this) {
             session = sessions.get(id);
             if (session == null) {
                 return -1;
             }
-            assert session.refCnt() >= 1;
 
             // If the session is not valid anymore we should remove it from the cache and just signal back
             // that we couldn't find a session that is re-usable.
@@ -187,43 +188,57 @@ class OpenSslSessionCache implements SSLSessionCache {
                     // wrong. In this case just remove the session from the cache and signal back that we couldn't
                     // find a session for re-use.
                     !session.upRef()) {
+                // Remove the session from the cache. This will also take care of calling SSL_SESSION_free(...)
                 removeSessionWithId(session.sessionId());
                 return -1;
             }
-        }
 
-        // Now that we incremented the reference count of the native SSL_SESSION we should also retain the reference
-        // count of our java session.
-        session.retain();
-
-        if (session.shouldBeSingleUse()) {
-            // Should only be used once. In this case invalidate the session which will also ensure we remove it
-            // from the cache and not use it again in the future.
-            session.invalidate();
+            // At this point we already incremented the reference count via SSL_SESSION_up_ref(...).
+            if (session.shouldBeSingleUse()) {
+                // Should only be used once. In this case invalidate the session which will also ensure we remove it
+                // from the cache and call SSL_SESSION_free(...).
+                removeSessionWithId(session.sessionId());
+            }
+            session.updateLastAccessedTime();
+            return session.session();
         }
-        session.updateLastAccessedTime();
-        return session.nativeAddr();
     }
 
+    void setSession(long ssl, String host, int port) {
+        // Do nothing by default as this needs special handling for the client side.
+    }
+
+    /**
+     * Remove the session with the given id from the cache
+     */
     final synchronized void removeSessionWithId(OpenSslSessionId id) {
-        OpenSslSession sslSession = sessions.remove(id);
+        NativeSslSession sslSession = sessions.remove(id);
         if (sslSession != null) {
-            notifyRemovalAndRelease(sslSession);
+            notifyRemovalAndFree(sslSession);
         }
     }
 
-    private void notifyRemovalAndRelease(OpenSslSession session) {
-        sessionRemoved(session);
-        session.release();
+    /**
+     * Returns {@code true} if there is a session for the given id in the cache.
+     */
+    final synchronized boolean containsSessionWithId(OpenSslSessionId id) {
+        return sessions.containsKey(id);
     }
 
-    final SSLSession getSession(byte[] bytes) {
-        OpenSslSessionId id = new OpenSslSessionId(bytes);
+    private void notifyRemovalAndFree(NativeSslSession session) {
+        sessionRemoved(session);
+        session.free();
+    }
+
+    /**
+     * Return the {@link OpenSslSession} which is cached for the given id.
+     */
+    final OpenSslSession getSession(OpenSslSessionId id) {
         synchronized (this) {
-            OpenSslSession session = sessions.get(id);
+            NativeSslSession session = sessions.get(id);
             if (session != null && !session.isValid()) {
-                // The session is not valid anymore, let's remove it and just signale back that there is no session
-                // with the given ID in the cache anymore.
+                // The session is not valid anymore, let's remove it and just signal back that there is no session
+                // with the given ID in the cache anymore. This also takes care of calling SSL_SESSION_free(...)
                 removeSessionWithId(session.sessionId());
                 return null;
             }
@@ -231,26 +246,242 @@ class OpenSslSessionCache implements SSLSessionCache {
         }
     }
 
-    final List<byte[]> getIds() {
+    /**
+     * Returns a snapshot of the session ids of the current valid sessions.
+     */
+    final List<OpenSslSessionId> getIds() {
         final OpenSslSession[] sessionsArray;
         synchronized (this) {
             sessionsArray = sessions.values().toArray(EMPTY_SESSIONS);
         }
-        List<byte[]> ids = new ArrayList<byte[]>(sessionsArray.length);
+        List<OpenSslSessionId> ids = new ArrayList<OpenSslSessionId>(sessionsArray.length);
         for (OpenSslSession session: sessionsArray) {
             if (session.isValid()) {
-                ids.add(session.getId());
+                ids.add(session.sessionId());
             }
         }
         return ids;
     }
 
+    /**
+     * Clear the cache and free all cached SSL_SESSION*.
+     */
     synchronized void clear() {
-        Iterator<Map.Entry<OpenSslSessionId, OpenSslSession>> iterator = sessions.entrySet().iterator();
+        Iterator<Map.Entry<OpenSslSessionId, NativeSslSession>> iterator = sessions.entrySet().iterator();
         while (iterator.hasNext()) {
-            OpenSslSession session = iterator.next().getValue();
+            NativeSslSession session = iterator.next().getValue();
             iterator.remove();
-            notifyRemovalAndRelease(session);
+
+            // Notify about removal. This also takes care of calling SSL_SESSION_free(...).
+            notifyRemovalAndFree(session);
+        }
+    }
+
+    /**
+     * {@link OpenSslSession} implementation which wraps the native SSL_SESSION* while in cache.
+     */
+    static final class NativeSslSession implements OpenSslSession {
+        static final ResourceLeakDetector<NativeSslSession> LEAK_DETECTOR = ResourceLeakDetectorFactory.instance()
+                .newResourceLeakDetector(NativeSslSession.class);
+        private ResourceLeakTracker<NativeSslSession> leakTracker;
+        private final long session;
+        private final String peerHost;
+        private final int peerPort;
+        private final OpenSslSessionId id;
+        private final long timeout;
+        private final long creationTime = System.currentTimeMillis();
+        private volatile long lastAccessedTime = creationTime;
+        private volatile boolean valid = true;
+        private boolean freed;
+
+        NativeSslSession(long session, String peerHost, int peerPort, long timeout) {
+            this.session = session;
+            this.peerHost = peerHost;
+            this.peerPort = peerPort;
+            this.timeout = timeout;
+            this.id = new OpenSslSessionId(io.netty.internal.tcnative.SSLSession.getSessionId(session));
+            leakTracker = LEAK_DETECTOR.track(this);
+        }
+
+        @Override
+        public void setSessionId(OpenSslSessionId id) {
+            throw new UnsupportedOperationException();
+        }
+
+        boolean shouldBeSingleUse() {
+            assert !freed;
+            return io.netty.internal.tcnative.SSLSession.shouldBeSingleUse(session);
+        }
+
+        long session() {
+            assert !freed;
+            return session;
+        }
+
+        boolean upRef() {
+            assert !freed;
+            return io.netty.internal.tcnative.SSLSession.upRef(session);
+        }
+
+        synchronized void free() {
+            assert !freed;
+            freed = true;
+            invalidate();
+            io.netty.internal.tcnative.SSLSession.free(session);
+            if (leakTracker != null) {
+                leakTracker.close(this);
+            }
+        }
+
+        @Override
+        public OpenSslSessionId sessionId() {
+            return id;
+        }
+
+        boolean isValid(long now) {
+            return creationTime + timeout >= now && valid;
+        }
+
+        @Override
+        public void setLocalCertificate(Certificate[] localCertificate) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public OpenSslSessionContext getSessionContext() {
+            return null;
+        }
+
+        @Override
+        public void tryExpandApplicationBufferSize(int packetLengthDataOnly) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void handshakeFinished(byte[] id, String cipher, String protocol, byte[] peerCertificate,
+                                      byte[][] peerCertificateChain, long creationTime, long timeout) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public byte[] getId() {
+            return id.cloneBytes();
+        }
+
+        @Override
+        public long getCreationTime() {
+            return creationTime;
+        }
+
+        void updateLastAccessedTime() {
+            this.lastAccessedTime = System.currentTimeMillis();
+        }
+
+        @Override
+        public long getLastAccessedTime() {
+            return lastAccessedTime;
+        }
+
+        @Override
+        public void invalidate() {
+            valid = false;
+        }
+
+        @Override
+        public boolean isValid() {
+            return isValid(System.currentTimeMillis());
+        }
+
+        @Override
+        public void putValue(String name, Object value) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Object getValue(String name) {
+            return null;
+        }
+
+        @Override
+        public void removeValue(String name) {
+            // NOOP
+        }
+
+        @Override
+        public String[] getValueNames() {
+            return EmptyArrays.EMPTY_STRINGS;
+        }
+
+        @Override
+        public Certificate[] getPeerCertificates() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Certificate[] getLocalCertificates() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public X509Certificate[] getPeerCertificateChain() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Principal getPeerPrincipal() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Principal getLocalPrincipal() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public String getCipherSuite() {
+            return null;
+        }
+
+        @Override
+        public String getProtocol() {
+            return null;
+        }
+
+        @Override
+        public String getPeerHost() {
+            return peerHost;
+        }
+
+        @Override
+        public int getPeerPort() {
+            return peerPort;
+        }
+
+        @Override
+        public int getPacketBufferSize() {
+            return ReferenceCountedOpenSslEngine.MAX_RECORD_SIZE;
+        }
+
+        @Override
+        public int getApplicationBufferSize() {
+            return ReferenceCountedOpenSslEngine.MAX_PLAINTEXT_LENGTH;
+        }
+
+        @Override
+        public int hashCode() {
+            return id.hashCode();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof OpenSslSession)) {
+                return false;
+            }
+            OpenSslSession session1 = (OpenSslSession) o;
+            return id.equals(session1.sessionId());
         }
     }
 }

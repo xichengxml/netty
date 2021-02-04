@@ -151,10 +151,52 @@ public class ConscryptOpenSslEngineInteropTest extends ConscryptSslEngineTest {
         super.testSessionLocalWhenNonMutualWithKeyManager();
     }
 
-    @Ignore("Ignore for now as Conscrypt seems to behave different then expected")
+    // BoringSSL only supports stateless resumption in TLS 1.3 and so this test will not work if session
+    // tickets are disabled when using BoringSSL.
+    // https://boringssl.googlesource.com/boringssl/+/refs/heads/master/ssl/tls13_server.cc#104
+    private boolean skipSessionTest() {
+        return protocolCipherCombo == ProtocolCipherCombo.tlsv13() && OpenSsl.isBoringSSL();
+    }
+
+    @Test
     @Override
-    public void testSessionCache() {
-        // Skip
+    public void testSessionCache() throws Exception {
+        if (!skipSessionTest()) {
+            // TODO: Should we enable tickets in this case when both sides are using BoringSSL for the test ?
+            super.testSessionCache();
+        }
+    }
+
+    @Override
+    public void testSessionCacheTimeout() throws Exception {
+        if (!skipSessionTest()) {
+            // TODO: Should we enable tickets in this case when both sides are using BoringSSL for the test ?
+            super.testSessionCacheTimeout();
+        }
+    }
+
+    @Override
+    public void testSessionCacheSize() throws Exception {
+        if (!skipSessionTest()) {
+            // TODO: Should we enable tickets in this case when both sides are using BoringSSL for the test ?
+            super.testSessionCacheSize();
+        }
+    }
+
+    @Override
+    public void testSessionInvalidate() throws Exception {
+        if (!skipSessionTest()) {
+            // TODO: Should we enable tickets in this case when both sides are using BoringSSL for the test ?
+            super.testSessionInvalidate();
+        }
+    }
+
+    @Override
+    public void testSSLSessionId() throws Exception {
+        if (!skipSessionTest()) {
+            // TODO: Should we enable tickets in this case when both sides are using BoringSSL for the test ?
+            super.testSSLSessionId();
+        }
     }
 
     @Override

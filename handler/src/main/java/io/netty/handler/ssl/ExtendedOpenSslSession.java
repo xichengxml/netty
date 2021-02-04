@@ -19,6 +19,7 @@ import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.SuppressJava6Requirement;
 
 import javax.net.ssl.ExtendedSSLSession;
+import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSessionBindingEvent;
 import javax.net.ssl.SSLSessionBindingListener;
@@ -67,28 +68,13 @@ abstract class ExtendedOpenSslSession extends ExtendedSSLSession implements Open
     }
 
     @Override
-    public final boolean isNullSession() {
-        return wrapped.isNullSession();
+    public void setSessionId(OpenSslSessionId id) {
+        wrapped.setSessionId(id);
     }
 
     @Override
     public final void setLocalCertificate(Certificate[] localCertificate) {
         wrapped.setLocalCertificate(localCertificate);
-    }
-
-    @Override
-    public final void setPacketBufferSize(int packetBufferSize) {
-        wrapped.setPacketBufferSize(packetBufferSize);
-    }
-
-    @Override
-    public final long nativeAddr() {
-        return wrapped.nativeAddr();
-    }
-
-    @Override
-    public final void updateLastAccessedTime() {
-        wrapped.updateLastAccessedTime();
     }
 
     @Override
@@ -134,11 +120,6 @@ abstract class ExtendedOpenSslSession extends ExtendedSSLSession implements Open
     @Override
     public final boolean isValid() {
         return wrapped.isValid();
-    }
-
-    @Override
-    public boolean isValid(long now) {
-        return wrapped.isValid(now);
     }
 
     @Override
@@ -225,55 +206,6 @@ abstract class ExtendedOpenSslSession extends ExtendedSSLSession implements Open
         return wrapped.getApplicationBufferSize();
     }
 
-    @Override
-    public boolean upRef() {
-        return wrapped.upRef();
-    }
-
-    @Override
-    public boolean shouldBeSingleUse() {
-        return wrapped.shouldBeSingleUse();
-    }
-
-    @Override
-    public ExtendedOpenSslSession retain() {
-        wrapped.retain();
-        return this;
-    }
-
-    @Override
-    public ExtendedOpenSslSession retain(int increment) {
-        wrapped.retain(increment);
-        return this;
-    }
-
-    @Override
-    public ExtendedOpenSslSession touch() {
-        wrapped.touch();
-        return this;
-    }
-
-    @Override
-    public ExtendedOpenSslSession touch(Object hint) {
-        wrapped.touch(hint);
-        return this;
-    }
-
-    @Override
-    public int refCnt() {
-        return wrapped.refCnt();
-    }
-
-    @Override
-    public boolean release() {
-        return wrapped.release();
-    }
-
-    @Override
-    public boolean release(int decrement) {
-        return wrapped.release(decrement);
-    }
-
     private final class SSLSessionBindingListenerDecorator implements SSLSessionBindingListener {
 
         final SSLSessionBindingListener delegate;
@@ -291,5 +223,18 @@ abstract class ExtendedOpenSslSession extends ExtendedSSLSession implements Open
         public void valueUnbound(SSLSessionBindingEvent event) {
             delegate.valueUnbound(new SSLSessionBindingEvent(ExtendedOpenSslSession.this, event.getName()));
         }
+    }
+
+    @Override
+    public void handshakeFinished(byte[] id, String cipher, String protocol, byte[] peerCertificate,
+                                  byte[][] peerCertificateChain, long creationTime, long timeout) throws SSLException {
+        wrapped.handshakeFinished(id, cipher, protocol, peerCertificate, peerCertificateChain, creationTime, timeout);
+    }
+
+    @Override
+    public String toString() {
+        return "ExtendedOpenSslSession{" +
+                "wrapped=" + wrapped +
+                '}';
     }
 }

@@ -235,7 +235,6 @@ public final class ReferenceCountedOpenSslServerContext extends ReferenceCounted
                 // Maybe null if destroyed in the meantime.
                 return;
             }
-            engine.setupHandshakeSession();
             try {
                 // For now we just ignore the asn1DerEncodedPrincipals as this is kind of inline with what the
                 // OpenJDK SSLEngineImpl does.

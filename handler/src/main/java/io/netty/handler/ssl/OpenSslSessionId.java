@@ -49,6 +49,13 @@ final class OpenSslSessionId {
     }
 
     @Override
+    public String toString() {
+        return "OpenSslSessionId{" +
+                "id=" + Arrays.toString(id) +
+                '}';
+    }
+
+    @Override
     public int hashCode() {
         return hashCode;
     }
