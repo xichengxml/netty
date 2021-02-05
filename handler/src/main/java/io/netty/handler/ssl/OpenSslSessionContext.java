@@ -41,7 +41,7 @@ public abstract class OpenSslSessionContext implements SSLSessionContext {
 
     final ReferenceCountedOpenSslContext context;
 
-    final OpenSslSessionCache sessionCache;
+    private final OpenSslSessionCache sessionCache;
     private final long mask;
 
     // IMPORTANT: We take the OpenSslContext and not just the long (which points the native instance) to prevent
