@@ -159,7 +159,9 @@ class OpenSslSessionCache implements SSLSessionCache {
             }
 
             if (!sessionCreated(session)) {
-                // Should not be cached, return false.
+                // Should not be cached, return false. In this case we also need to call close() to ensure we
+                // close the ResourceLeakTracker.
+                session.close();
                 return false;
             }
 
@@ -284,7 +286,7 @@ class OpenSslSessionCache implements SSLSessionCache {
     static final class NativeSslSession implements OpenSslSession {
         static final ResourceLeakDetector<NativeSslSession> LEAK_DETECTOR = ResourceLeakDetectorFactory.instance()
                 .newResourceLeakDetector(NativeSslSession.class);
-        private ResourceLeakTracker<NativeSslSession> leakTracker;
+        private final ResourceLeakTracker<NativeSslSession> leakTracker;
         private final long session;
         private final String peerHost;
         private final int peerPort;
@@ -325,10 +327,14 @@ class OpenSslSessionCache implements SSLSessionCache {
         }
 
         synchronized void free() {
+            close();
+            io.netty.internal.tcnative.SSLSession.free(session);
+        }
+
+        void close() {
             assert !freed;
             freed = true;
             invalidate();
-            io.netty.internal.tcnative.SSLSession.free(session);
             if (leakTracker != null) {
                 leakTracker.close(this);
             }
