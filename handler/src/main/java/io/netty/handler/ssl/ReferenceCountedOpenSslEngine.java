@@ -359,6 +359,17 @@ public class ReferenceCountedOpenSslEngine extends SSLEngine implements Referenc
                     SSL.setMode(ssl, SSL.getMode(ssl) | SSL.SSL_MODE_ENABLE_PARTIAL_WRITE);
                 }
 
+                int options = SSL.getOptions(ssl);
+                if (isProtocolEnabled(options, SSL.SSL_OP_NO_TLSv1_3, PROTOCOL_TLS_V1_3)) {
+                    // If TLS 1.3 is used we want to support session tickets by default if possible as these are
+                    // used for stateless resumption. This is also inline with what the JDK is doing:
+                    // https://bugs.openjdk.java.net/browse/JDK-8223922
+                    //
+                    // This is also the only way how session resumption will work when using BoringSSL as BoringSSL
+                    // only supports session resumption via stateless tickets in TLSv13:
+                    // https://boringssl.googlesource.com/boringssl/+/refs/heads/master/ssl/tls13_server.cc#104
+                    SSL.clearOptions(ssl, SSL.SSL_OP_NO_TICKET);
+                }
                 // setMode may impact the overhead.
                 calculateMaxWrapOverhead();
             } catch (Throwable cause) {
@@ -2233,7 +2244,7 @@ public class ReferenceCountedOpenSslEngine extends SSLEngine implements Referenc
         }
     }
 
-    void setSessionId(OpenSslSessionId id) {
+    final void setSessionId(OpenSslSessionId id) {
         session.setSessionId(id);
     }
 
@@ -2264,10 +2275,12 @@ public class ReferenceCountedOpenSslEngine extends SSLEngine implements Referenc
         }
 
         @Override
-        public synchronized void setSessionId(OpenSslSessionId sessionId) {
-            if (this.id == OpenSslSessionId.NULL_ID) {
-                this.id = sessionId;
-                creationTime = System.currentTimeMillis();
+        public void setSessionId(OpenSslSessionId sessionId) {
+            synchronized (ReferenceCountedOpenSslEngine.this) {
+                if (this.id == OpenSslSessionId.NULL_ID) {
+                    this.id = sessionId;
+                    creationTime = System.currentTimeMillis();
+                }
             }
         }
 

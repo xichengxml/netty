@@ -149,6 +149,7 @@ class OpenSslSessionCache implements SSLSessionCache {
         }
         NativeSslSession session = new NativeSslSession(sslSession, engine.getPeerHost(), engine.getPeerPort(),
                 getSessionTimeout() * 1000L);
+        engine.setSessionId(session.sessionId());
         synchronized (this) {
             // Mimic what OpenSSL is doing and expunge every 255 new sessions
             // See https://www.openssl.org/docs/man1.0.2/man3/SSL_CTX_flush_sessions.html
