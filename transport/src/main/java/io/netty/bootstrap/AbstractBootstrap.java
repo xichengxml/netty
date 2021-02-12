@@ -176,6 +176,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             if (value == null) {
                 options.remove(option);
             } else {
+                // ChannelOption没有重写hashcode和equals，没有问题?
                 options.put(option, value);
             }
         }
@@ -269,6 +270,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     }
 
     private ChannelFuture doBind(final SocketAddress localAddress) {
+        // *
         final ChannelFuture regFuture = initAndRegister();
         final Channel channel = regFuture.channel();
         if (regFuture.cause() != null) {
@@ -307,7 +309,9 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     final ChannelFuture initAndRegister() {
         Channel channel = null;
         try {
+            // <1> 创建NioServerSocketChannel
             channel = channelFactory.newChannel();
+            // <2> 初始化channel参数，pipeline
             init(channel);
         } catch (Throwable t) {
             if (channel != null) {
@@ -320,6 +324,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
             return new DefaultChannelPromise(new FailedChannel(), GlobalEventExecutor.INSTANCE).setFailure(t);
         }
 
+        // <3> 注册channel到Selector -> MultithreadEventLoopGroup.register
         ChannelFuture regFuture = config().group().register(channel);
         if (regFuture.cause() != null) {
             if (channel.isRegistered()) {

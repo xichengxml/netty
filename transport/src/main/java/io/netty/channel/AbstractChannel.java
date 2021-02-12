@@ -72,6 +72,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         this.parent = parent;
         id = newId();
         unsafe = newUnsafe();
+        // pipeline 双链
         pipeline = newChannelPipeline();
     }
 
@@ -468,9 +469,11 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 register0(promise);
             } else {
                 try {
+                    // * NioEventLoop.run
                     eventLoop.execute(new Runnable() {
                         @Override
                         public void run() {
+                            // *
                             register0(promise);
                         }
                     });
@@ -493,6 +496,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                     return;
                 }
                 boolean firstRegistration = neverRegistered;
+                // * AbstractNioChannel.doRegister
                 doRegister();
                 neverRegistered = false;
                 registered = true;
@@ -502,6 +506,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 pipeline.invokeHandlerAddedIfNeeded();
 
                 safeSetSuccess(promise);
+                // * 执行，pipeline中的遍历也在这里执行
                 pipeline.fireChannelRegistered();
                 // Only fire a channelActive if the channel has never been registered. This prevents firing
                 // multiple channel actives if the channel is deregistered and re-registered.
